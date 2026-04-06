@@ -22,19 +22,31 @@
 #include <ArduinoJson.h>
 #include <DNSServer.h>
 #include <QuectelEC200U.h>
+#include <time.h>
 // --- Configuration ---
 const char *ap_ssid = "Quectel_Manager";
 const char *ap_password = "password";
+// --- 认证配置 ---
+const char* ADMIN_USER = "admin";
+const char* ADMIN_PASS = "admin123";
+const char* AUTH_COOKIE_NAME = "ESPSESSIONID";
+
+const char* ntpServer = "ntp.aliyun.com"; // 阿里云 NTP 服务器
+const long  gmtOffset_sec = 8 * 3600;     // 东八区偏移 (8小时 * 3600秒)
+const int   daylightOffset_sec = 0;      // 夏令时偏移
 
 // Modem Pins (Adjust for your board)
-#define RX_PIN 18
-#define TX_PIN 17
+#define RX_PIN 04
+#define TX_PIN 05
 #define POWER_PIN 10 // Optional power pin
+// ========== 新增：状态检测引脚 ==========
+#define MODEM_STATUS_PIN 12 // 请根据实际硬件连接修改为正确的GPIO引脚
 
 #if defined(ESP32)
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+
 
 // Web Server on port 80
 WebServer server(80);
@@ -47,6 +59,12 @@ QuectelEC200U modem(modemSerial, 115200, RX_PIN, TX_PIN);
 #include <ESP8266WebServer.h>
 #include <ESP8266WiFi.h>
 #include <SoftwareSerial.h>
+#include <Preferences.h> // <-- 新增这一行，引入真正的库
+
+// ========== 温度传感器与运行时间 ==========
+#if defined(ESP32)
+#include <driver/temp_sensor.h>
+#endif
 
 // Web Server on port 80
 ESP8266WebServer server(80);
@@ -55,16 +73,6 @@ ESP8266WebServer server(80);
 SoftwareSerial modemSerial(RX_PIN, TX_PIN);
 QuectelEC200U modem(modemSerial);
 
-class Preferences {
-public:
-  void begin(const char* name, bool readOnly) {}
-  void end() {}
-  void clear() {}
-  String getString(const char* key, String defaultVal) { return defaultVal; }
-  int getInt(const char* key, int defaultVal) { return defaultVal; }
-  void putString(const char* key, String val) {}
-  void putInt(const char* key, int val) {}
-};
 #endif
 
 Preferences preferences;
@@ -72,6 +80,13 @@ DNSServer dnsServer;
 
 // Global variables
 int currentSocketId = -1;
+
+// 这些变量必须定义在所有函数之前（全局）
+float current_temperature = -127.0f;
+bool temp_sensor_initialized = false;
+unsigned long last_temp_read = 0;
+const unsigned long TEMP_READ_INTERVAL = 5000;
+unsigned long boot_time_ms = 0;
 
 struct ApnProfile {
   const char *keyword;
@@ -147,6 +162,7 @@ void loadApnPreferences();
 void saveApnPreferences(const String &apn, const String &user,
                         const String &pass, int auth);
 void clearApnPreferences();
+void sendCorsHeaders();
 ApnDetection detectApnProfile(const String &operatorName);
 ApnSelection getApnSelection(const String &operatorHint = String());
 bool configureContextWithApn(int ctxId, const String &apn, const String &user,
@@ -156,6 +172,69 @@ void appendCallEntries(const String &raw, JsonArray &entries);
 
 int speakerVolumeLevel = 60;
 int ringerVolumeLevel = 60;
+
+bool isAuthorized() {
+    if (server.hasHeader("Cookie")) {
+        String cookie = server.header("Cookie");
+        if (cookie.indexOf(String(AUTH_COOKIE_NAME) + "=valid_session_token") != -1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void bindProtected(const char* uri, HTTPMethod method, std::function<void()> handler) {
+    server.on(uri, method, [handler]() {
+        sendCorsHeaders();
+        if (server.method() == HTTP_OPTIONS) {
+            server.send(204);
+            return;
+        }
+        if (!isAuthorized()) {
+            server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
+            return;
+        }
+        handler();
+    });
+}
+
+void handleLogin() {
+    sendCorsHeaders();
+    if (server.method() == HTTP_OPTIONS) { server.send(204); return; }
+
+    JsonDocument doc;
+    deserializeJson(doc, server.arg("plain"));
+    
+    if (doc["user"] == ADMIN_USER && doc["pass"] == ADMIN_PASS) {
+        server.sendHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=valid_session_token; Path=/; HttpOnly; Max-Age=300");
+        server.send(200, "application/json", "{\"success\":true}");
+    } else {
+        server.send(401, "application/json", "{\"success\":false}");
+    }
+}
+
+void handleLogout() {
+    sendCorsHeaders();
+    server.sendHeader("Set-Cookie", String(AUTH_COOKIE_NAME) + "=; Path=/; Max-Age=0");
+    server.send(200, "application/json", "{\"success\":true}");
+}
+// ========================================================
+
+void handleGetTime() {
+    sendCorsHeaders();
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        server.send(200, "application/json", "{\"success\":false, \"time\":\"Time Not Set\"}");
+        return;
+    }
+    
+    char timeString[20];
+    // 格式化为: 2026-04-05 08:30:05
+    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    
+    String response = "{\"success\":true, \"time\":\"" + String(timeString) + "\"}";
+    server.send(200, "application/json", response);
+}
 
 void loadApnPreferences() {
   preferences.begin("cellular", true);
@@ -646,6 +725,95 @@ void handleModemInfo() {
   doc["firmware"] = modem.getFirmwareRevision();
   doc["version"] = modem.getModuleVersion();
 
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleEspInfo() {
+    sendCorsHeaders();
+    JsonDocument doc;
+    
+#if defined(ESP32)
+    doc["chip_model"] = "ESP32";
+    doc["chip_revision"] = ESP.getChipRevision();
+    doc["cpu_freq_mhz"] = ESP.getCpuFreqMHz();
+    doc["flash_size_mb"] = ESP.getFlashChipSize() / (1024 * 1024);
+    doc["free_heap_kb"] = ESP.getFreeHeap() / 1024;
+    doc["sketch_size_kb"] = ESP.getSketchSize() / 1024;
+    doc["sketch_free_kb"] = ESP.getFreeSketchSpace() / 1024;
+    doc["sdk_version"] = ESP.getSdkVersion();
+#elif defined(ESP8266)
+    doc["chip_model"] = "ESP8266";
+    doc["chip_id"] = ESP.getChipId();
+    doc["cpu_freq_mhz"] = ESP.getCpuFreqMHz();
+    doc["flash_size_mb"] = ESP.getFlashChipSize() / (1024 * 1024);
+    doc["free_heap_kb"] = ESP.getFreeHeap() / 1024;
+    doc["sketch_size_kb"] = ESP.getSketchSize() / 1024;
+    doc["sketch_free_kb"] = ESP.getFreeSketchSpace() / 1024;
+    doc["sdk_version"] = ESP.getSdkVersion();
+#else
+    doc["chip_model"] = "Unknown";
+    doc["cpu_freq_mhz"] = 0;
+    doc["flash_size_mb"] = 0;
+    doc["free_heap_kb"] = 0;
+    doc["sdk_version"] = "Unknown";
+#endif
+
+    // 网络信息
+    doc["mac"] = WiFi.macAddress();
+    IPAddress ip = WiFi.localIP();
+    if (ip.toString() != "0.0.0.0") {
+        doc["ip"] = ip.toString();
+    } else {
+        doc["ip"] = WiFi.softAPIP().toString();
+    }
+  // 当前 WiFi 连接信息（STA 模式或 AP 模式）
+  if (WiFi.getMode() == WIFI_STA && WiFi.status() == WL_CONNECTED) {
+    doc["current_wifi_ssid"] = WiFi.SSID();
+    doc["current_wifi_rssi"] = WiFi.RSSI();
+  } else if (WiFi.getMode() == WIFI_AP) {
+    doc["current_wifi_ssid"] = String("AP Mode: ") + ap_ssid;
+  } else {
+    doc["current_wifi_ssid"] = "None";
+  }
+    // ========== 新增：温度传感器数据 ==========
+    if (current_temperature > -100.0f) {
+        doc["temperature_celsius"] = current_temperature;
+        doc["temperature_fahrenheit"] = current_temperature * 9.0f / 5.0f + 32.0f;
+    } else {
+        doc["temperature_celsius"] = "N/A";
+        doc["temperature_fahrenheit"] = "N/A";
+    }
+
+    // ========== 新增：运行时间（开机时间） ==========
+    unsigned long uptime_seconds = (millis() - boot_time_ms) / 1000;
+    doc["uptime_seconds"] = uptime_seconds;
+    char uptime_str[20];
+    unsigned long hours = uptime_seconds / 3600;
+    unsigned long minutes = (uptime_seconds % 3600) / 60;
+    unsigned long seconds = uptime_seconds % 60;
+    snprintf(uptime_str, sizeof(uptime_str), "%02lu:%02lu:%02lu", hours, minutes, seconds);
+    doc["uptime_formatted"] = uptime_str;
+
+    // 可选：添加上次重启的绝对时间（需要NTP同步）
+    // doc["boot_time_epoch"] = (uint32_t)(time(nullptr) - uptime_seconds);
+
+    String response;
+    serializeJson(doc, response);
+    server.send(200, "application/json", response);
+}
+
+// ========== 新增：模块在线状态检测 API ==========
+void handleModemStatus() {
+  sendCorsHeaders();
+  
+  // 读取引脚电平：HIGH (1) = 在线, LOW (0) = 离线
+  bool isOnline = (digitalRead(MODEM_STATUS_PIN) == HIGH);
+  
+  JsonDocument doc;
+  doc["online"] = isOnline;
+  
   String response;
   serializeJson(doc, response);
   server.send(200, "application/json", response);
@@ -1542,8 +1710,34 @@ void handleSetUSBMode() {
 
 void setup() {
   Serial.begin(115200);
-#if defined(ESP8266)
-  modemSerial.begin(115200);
+  // ========== 新增：初始化检测引脚 ==========
+  pinMode(MODEM_STATUS_PIN, INPUT); // 设置为输入模式
+    // 记录启动时间
+    boot_time_ms = millis();
+
+    // 初始化 ESP32 内部温度传感器（仅 ESP32）
+#if defined(ESP32)
+    esp_err_t ret = temp_sensor_set_config(TEMP_SENSOR_DEFAULT_CONFIG);
+    if (ret == ESP_OK) {
+        ret = temp_sensor_start();
+        if (ret == ESP_OK) {
+            temp_sensor_initialized = true;
+            Serial.println("ESP32 internal temperature sensor initialized.");
+        } else {
+            Serial.println("Failed to start temp sensor.");
+        }
+    } else {
+        Serial.println("Failed to set temp sensor config.");
+    }
+#else
+    temp_sensor_initialized = false;
+    Serial.println("No internal temperature sensor on ESP8266.");
+#endif
+
+#if defined(ESP32)
+modemSerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+#elif defined(ESP8266)
+modemSerial.begin(115200);
 #endif
   loadApnPreferences();
 
@@ -1551,7 +1745,7 @@ void setup() {
   Serial.println("Initializing Modem...");
   // modem.powerOn(POWER_PIN); // Moved to manual control or non-blocking check
   // Check if modem is responsive, if not, try power on
-  if (!modem.begin()) {
+  /*if (!modem.begin()) {
     Serial.println("Modem not responding, attempting power on...");
     modem.powerOn(POWER_PIN);
     if (modem.begin()) {
@@ -1562,7 +1756,7 @@ void setup() {
   } else {
     Serial.println("Modem already ready.");
   }
-
+*/
   // Attempt Data Attach if APN is stored
   if (storedApn.hasCustom) {
     Serial.println("Found stored APN, attempting data attach...");
@@ -1575,6 +1769,9 @@ void setup() {
   }
 
   // WiFi Setup
+// ==========================================
+  // WiFi Setup (增强版连接逻辑)
+  // ==========================================
   preferences.begin("wifi", true);
   String ssid = preferences.getString("ssid", "");
   String pass = preferences.getString("pass", "");
@@ -1584,11 +1781,16 @@ void setup() {
   if (ssid.length() > 0) {
     Serial.print("Connecting to WiFi: ");
     Serial.println(ssid);
+    
+    // 【关键修复 1】彻底清理之前的 WiFi 状态
+    WiFi.disconnect(true);
+    delay(500); 
+    
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
-    // Wait up to 10s
-    for (int i = 0; i < 20; i++) {
+    // 【关键修复 2】增加超时等待时间：30次 * 500ms = 15秒 (可根据需要改为 40次/20秒)
+    for (int i = 0; i < 30; i++) {
       if (WiFi.status() == WL_CONNECTED) {
         connected = true;
         break;
@@ -1603,103 +1805,116 @@ void setup() {
     Serial.print("Connected! IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("Starting WiFi Hotspot...");
+    // 连不上才会 fallback 到 AP 模式
+    if (ssid.length() > 0) {
+      Serial.println("WiFi connection failed! Falling back to Hotspot...");
+    } else {
+      Serial.println("No WiFi credentials found. Starting Hotspot...");
+    }
+    
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
     IPAddress IP = WiFi.softAPIP();
     Serial.print("AP IP address: ");
     Serial.println(IP);
 
-    // Start DNS Server for Captive Portal (only in AP mode)
+    // Start DNS Server for Captive Portal
     dnsServer.start(53, "*", IP);
   }
 
-  // Setup Web Server Routes
+configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+Serial.println("NTP 时间同步已启动...");
+
+// 1. 允许服务器解析 Cookie (兼容 ESP32 和 ESP8266)
+  server.collectHeaders("Cookie", "User-Agent");
+
+  // 2. 注册公开路由 (不需要登录)
   server.on("/", handleRoot);
   server.on("/health", []() { server.send(200, "text/plain", "OK"); });
-  server.on("/api/status", handleStatus);
-  server.on("/api/modem/info", handleModemInfo);
-  server.on("/api/sms/send", handleSmsSend);
-  server.on("/api/sms/read", handleSmsRead);
-  server.on("/api/gps/location", handleGpsLocation);
-  server.on("/api/call/dial", handleCallDial);
-  server.on("/api/call/hangup", handleCallHangup);
-  server.on("/api/call/answer", handleCallAnswer);
-  server.on("/api/call/status", handleCallStatus);
-  server.on("/api/call/volume", handleCallVolume);
-  server.on("/api/at", handleAT);
-  server.on("/api/tcp/open", handleTcpOpen);
-  server.on("/api/tcp/close", handleTcpClose);
-  server.on("/api/tcp/send", handleTcpSend);
-  server.on("/api/ping", handlePing);
-  server.on("/api/device/sensors", handleDeviceSensors);
-  server.on("/api/pdp/status", handlePdpStatus);
-  server.on("/api/pdp/activate", handlePdpActivate);
-  server.on("/api/pdp/deactivate", handlePdpDeactivate);
-  server.on("/api/pdp/clear", handlePdpClear);
-  server.on("/api/mqtt/status", handleMqttStatus);
-  server.on("/api/mqtt/connect", handleMqttConnect);
-  server.on("/api/mqtt/disconnect", handleMqttDisconnect);
-  server.on("/api/mqtt/publish", handleMqttPublish);
-  server.on("/api/mqtt/subscribe", handleMqttSubscribe);
-  server.on("/api/wifi/save", handleWifiSave);
-  server.on("/api/wifi/forget", handleWifiForget);
-  server.on("/api/modem/poweron", handleModemPowerOn);
-  server.on("/api/modem/poweroff", handleModemPowerOff);
-  server.on("/api/esp/reboot", handleEspReboot);
-  server.on("/api/quectel/wifi/scan", handleQuectelWifiScan);
-  server.on("/api/quectel/bt/scan", handleBluetoothScan);
+  server.on("/api/login", HTTP_POST, handleLogin);
+  server.on("/api/login", HTTP_OPTIONS, handleOptions);
+  server.on("/api/logout", HTTP_POST, handleLogout);
+
+  // 3. 使用 bindProtected 批量注册受保护路由
+  bindProtected("/api/status", HTTP_GET, handleStatus);
+  bindProtected("/api/modem/status", HTTP_GET, handleModemStatus); // <-- 新增这一行
+  bindProtected("/api/modem/info", HTTP_GET, handleModemInfo);
+  bindProtected("/api/sms/send", HTTP_POST, handleSmsSend);
+  bindProtected("/api/sms/read", HTTP_GET, handleSmsRead);
+  bindProtected("/api/gps/location", HTTP_GET, handleGpsLocation);
+  bindProtected("/api/esp/info", HTTP_GET, handleEspInfo);
+  bindProtected("/api/system/time", HTTP_GET, handleGetTime);
+  
+  bindProtected("/api/call/dial", HTTP_POST, handleCallDial);
+  bindProtected("/api/call/hangup", HTTP_POST, handleCallHangup);
+  bindProtected("/api/call/answer", HTTP_POST, handleCallAnswer);
+  bindProtected("/api/call/status", HTTP_GET, handleCallStatus);
+  bindProtected("/api/call/volume", HTTP_POST, handleCallVolume);
+  
+  bindProtected("/api/at", HTTP_POST, handleAT); // 修正：对应你代码里的 handleAT
+  
+  bindProtected("/api/tcp/open", HTTP_POST, handleTcpOpen);
+  bindProtected("/api/tcp/close", HTTP_POST, handleTcpClose);
+  bindProtected("/api/tcp/send", HTTP_POST, handleTcpSend);
+  bindProtected("/api/ping", HTTP_POST, handlePing);
+  
+  bindProtected("/api/device/sensors", HTTP_GET, handleDeviceSensors);
+  
+  bindProtected("/api/pdp/status", HTTP_GET, handlePdpStatus);
+  bindProtected("/api/pdp/activate", HTTP_POST, handlePdpActivate);
+  bindProtected("/api/pdp/deactivate", HTTP_POST, handlePdpDeactivate);
+  bindProtected("/api/pdp/clear", HTTP_POST, handlePdpClear);
+  
+  bindProtected("/api/mqtt/status", HTTP_GET, handleMqttStatus);
+  bindProtected("/api/mqtt/connect", HTTP_POST, handleMqttConnect);
+  bindProtected("/api/mqtt/disconnect", HTTP_POST, handleMqttDisconnect);
+  bindProtected("/api/mqtt/publish", HTTP_POST, handleMqttPublish);
+  bindProtected("/api/mqtt/subscribe", HTTP_POST, handleMqttSubscribe);
+  
+  bindProtected("/api/wifi/save", HTTP_POST, handleWifiSave);
+  bindProtected("/api/wifi/forget", HTTP_POST, handleWifiForget);
+  
+  bindProtected("/api/modem/poweron", HTTP_POST, handleModemPowerOn);
+  bindProtected("/api/modem/poweroff", HTTP_POST, handleModemPowerOff);
+  bindProtected("/api/esp/reboot", HTTP_POST, handleEspReboot); // 修正：对应你代码里的 handleEspReboot
+  
+  bindProtected("/api/quectel/wifi/scan", HTTP_GET, handleQuectelWifiScan);
+  bindProtected("/api/quectel/bt/scan", HTTP_GET, handleBluetoothScan);
 
   // Advanced Features
-  server.on("/api/sim/switch", handleSimSwitch);
-  server.on("/api/sim/isim", handleToggleISIM);
-  server.on("/api/sim/dsds", handleSetDSDS);
-  server.on("/api/call/block", handleBlockCalls);
-  server.on("/api/system/usb", handleSetUSBMode);
-
-  // Handle OPTIONS for CORS
-  server.on("/api/status", HTTP_OPTIONS, handleOptions);
-  server.on("/api/modem/info", HTTP_OPTIONS, handleOptions);
-  server.on("/api/sms/send", HTTP_OPTIONS, handleOptions);
-  server.on("/api/call/dial", HTTP_OPTIONS, handleOptions);
-  server.on("/api/call/answer", HTTP_OPTIONS, handleOptions);
-  server.on("/api/call/status", HTTP_OPTIONS, handleOptions);
-  server.on("/api/at", HTTP_OPTIONS, handleOptions);
-  server.on("/api/tcp/open", HTTP_OPTIONS, handleOptions);
-  server.on("/api/tcp/close", HTTP_OPTIONS, handleOptions);
-  server.on("/api/tcp/send", HTTP_OPTIONS, handleOptions);
-  server.on("/api/ping", HTTP_OPTIONS, handleOptions);
-  server.on("/api/device/sensors", HTTP_OPTIONS, handleOptions);
-  server.on("/api/pdp/status", HTTP_OPTIONS, handleOptions);
-  server.on("/api/pdp/activate", HTTP_OPTIONS, handleOptions);
-  server.on("/api/pdp/deactivate", HTTP_OPTIONS, handleOptions);
-  server.on("/api/pdp/clear", HTTP_OPTIONS, handleOptions);
-  server.on("/api/mqtt/status", HTTP_OPTIONS, handleOptions);
-  server.on("/api/mqtt/connect", HTTP_OPTIONS, handleOptions);
-  server.on("/api/mqtt/disconnect", HTTP_OPTIONS, handleOptions);
-  server.on("/api/mqtt/publish", HTTP_OPTIONS, handleOptions);
-  server.on("/api/mqtt/subscribe", HTTP_OPTIONS, handleOptions);
-  server.on("/api/wifi/save", HTTP_OPTIONS, handleOptions);
-  server.on("/api/wifi/forget", HTTP_OPTIONS, handleOptions);
-  server.on("/api/modem/poweron", HTTP_OPTIONS, handleOptions);
-  server.on("/api/modem/poweroff", HTTP_OPTIONS, handleOptions);
-  server.on("/api/esp/reboot", HTTP_OPTIONS, handleOptions);
-  server.on("/api/quectel/wifi/scan", HTTP_OPTIONS, handleOptions);
-  server.on("/api/quectel/bt/scan", HTTP_OPTIONS, handleOptions);
-  server.on("/api/sim/switch", HTTP_OPTIONS, handleOptions);
-  server.on("/api/sim/isim", HTTP_OPTIONS, handleOptions);
-  server.on("/api/sim/dsds", HTTP_OPTIONS, handleOptions);
-  server.on("/api/call/block", HTTP_OPTIONS, handleOptions);
-  server.on("/api/system/usb", HTTP_OPTIONS, handleOptions);
+  bindProtected("/api/sim/switch", HTTP_POST, handleSimSwitch);
+  bindProtected("/api/sim/isim", HTTP_POST, handleToggleISIM);
+  bindProtected("/api/sim/dsds", HTTP_POST, handleSetDSDS);
+  bindProtected("/api/call/block", HTTP_POST, handleBlockCalls);
+  bindProtected("/api/system/usb", HTTP_POST, handleSetUSBMode);
 
   server.onNotFound(handleNotFound);
 
   server.begin();
-  Serial.println("Web Server started");
+  Serial.println("Web Server with Auth started");
 }
 
 void loop() {
   dnsServer.processNextRequest();
   server.handleClient();
+    // 定期读取温度（非阻塞）
+    if (millis() - last_temp_read >= TEMP_READ_INTERVAL) {
+        last_temp_read = millis();
+#if defined(ESP32)
+        if (temp_sensor_initialized) {
+            float tsens_out;
+            esp_err_t ret = temp_sensor_read_celsius(&tsens_out);
+            if (ret == ESP_OK) {
+                current_temperature = tsens_out;
+            } else {
+                current_temperature = -127.0f;
+            }
+        } else {
+            current_temperature = -127.0f;
+        }
+#else
+        current_temperature = -127.0f;
+#endif
+    }
   // Add any non-blocking modem maintenance here if needed
 }

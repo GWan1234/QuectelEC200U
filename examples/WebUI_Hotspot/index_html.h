@@ -47,6 +47,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         .container {
             max-width: 1200px;
             margin: 0 auto;
+            display: none;  /* 初始隐藏，认证成功后显示 */
         }
 
         /* Header */
@@ -158,7 +159,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         .status-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
+            gap: 6px;
         }
 
         .status-item {
@@ -311,6 +312,68 @@ const char index_html[] PROGMEM = R"rawliteral(
             to { bottom: 0; opacity: 0; }
         }
 
+        /* Login Overlay - 初始隐藏，由认证检查控制显示 */
+        #login-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--bg-color); z-index: 1000;
+            display: none;  /* 初始隐藏 */
+            justify-content: center;
+            align-items: center;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+        }
+        .login-box {
+            background: var(--card-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            padding: 40px 30px; border-radius: 20px; border: 1px solid var(--card-border);
+            width: 90%; max-width: 360px; text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }
+        .login-box h2 {
+            margin-bottom: 25px; font-size: 1.5rem;
+            background: linear-gradient(135deg, #38bdf8, #818cf8);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        #login-msg { color: var(--error-color); margin-top: 15px; font-size: 0.85rem; min-height: 20px; }
+
+        /* Loading Overlay */
+        #loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--bg-color);
+            z-index: 1002;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+        }
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(56, 189, 248, 0.3);
+            border-top-color: #38bdf8;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .loading-text {
+            margin-top: 20px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+/* ========== 新增：顶层状态指示灯样式 ========== */
+        .status-online { color: var(--success-color) !important; }
+        .status-online span { background: var(--success-color) !important; box-shadow: 0 0 8px var(--success-color); }
+        
+        .status-offline { color: var(--error-color) !important; }
+        .status-offline span { background: var(--error-color) !important; box-shadow: 0 0 8px var(--error-color); }
         /* Responsive Adjustments */
         @media (max-width: 600px) {
             body { padding: 15px; }
@@ -322,14 +385,44 @@ const char index_html[] PROGMEM = R"rawliteral(
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Quectel Manager</h1>
-            <div id="connection-status" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--success-color);">
-                <span style="width: 8px; height: 8px; background: var(--success-color); border-radius: 50%; box-shadow: 0 0 8px var(--success-color);"></span>
-                Online
-            </div>
-        </header>
+    <!-- 加载指示器，初始显示 -->
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div class="loading-text">Loading...</div>
+    </div>
+
+    <!-- 登录覆盖层，初始隐藏 -->
+    <div id="login-overlay">
+        <div class="login-box">
+            <h2>System Login</h2>
+            <input type="text" id="login-user" placeholder="Username">
+            <input type="password" id="login-pass" placeholder="Password" onkeypress="if(event.key === 'Enter') doLogin()">
+            <button onclick="doLogin()">Sign In</button>
+            <div id="login-msg"></div>
+        </div>
+    </div>
+
+    <!-- 主容器，初始隐藏，认证成功后显示 -->
+<div class="container">
+  <header>
+    <h1>Quectel Manager</h1>
+
+    <!-- 右侧整体：状态 + 按钮组 水平居中对齐 -->
+    <div style="display: flex; align-items: center; gap: 12px;">
+      
+      <!-- 在线状态指示灯 -->
+      <div id="connection-status" class="status-online" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; white-space: nowrap;">
+        <span style="width: 8px; height: 8px; border-radius: 50%;"></span>
+        <label id="status-text" style="margin: 0;">Online</label>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 6px; width: 110px;">
+        <button onclick="rebootEsp()" class="danger" style="padding: 5px 10px; font-size: 0.8rem;">Reboot</button>
+        <button onclick="doLogout()" style="padding: 5px 10px; font-size: 0.8rem;">Logout</button>
+      </div>
+
+    </div>
+  </header>
 
         <div class="nav-scroll">
             <div class="nav-tabs">
@@ -380,41 +473,100 @@ const char index_html[] PROGMEM = R"rawliteral(
                     </div>
                 </div>
                 
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">Device Info</div>
-                    </div>
-                    <div class="status-grid">
-                        <div class="status-item" style="grid-column: span 2;">
-                            <div class="status-label">IMEI</div>
-                            <div class="status-value" id="imei" style="font-family: var(--font-mono); font-size: 0.9rem;">--</div>
-                        </div>
-                        <div class="status-item" style="grid-column: span 2;">
-                            <div class="status-label">Model</div>
-                            <div class="status-value" id="model">--</div>
-                        </div>
-                        <div class="status-item" style="grid-column: span 2;">
-                            <div class="status-label">Firmware</div>
-                            <div class="status-value" id="firmware" style="font-family: var(--font-mono); font-size: 0.85rem;">--</div>
-                        </div>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px;">
-                        <button onclick="refreshStatus()" class="secondary">
-                            <span style="margin-right: 5px;">↻</span> Refresh
-                        </button>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px;">
-                            <button onclick="powerOnModem()" style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 8px; font-size: 0.85rem;">
-                                <span style="margin-right: 2px;">⚡</span> On
-                            </button>
-                            <button onclick="powerOffModem()" class="danger" style="padding: 8px; font-size: 0.85rem;">
-                                <span style="margin-right: 2px;">⭕</span> Off
-                            </button>
-                            <button onclick="rebootEsp()" class="secondary" style="padding: 8px; font-size: 0.85rem;">
-                                <span style="margin-right: 2px;">🔄</span> ESP
-                            </button>
-                        </div>
-                    </div>
-                </div>
+<!-- Device Info 卡片开始 -->
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Device Info (Modem & ESP)</div>
+    </div>
+    <!-- IMEI / Model / Firmware 保持原样 -->
+
+    <div class="status-item" style="grid-column: span 2;">
+        <div class="status-label" style="margin-bottom: 0;">System Time</div>
+        <div class="status-value" id="sys-time" style="font-family: var(--font-mono); font-size: 0.9rem;">--</div>
+    </div>
+
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">IMEI</div>
+        <div class="status-value" id="imei" style="font-family: var(--font-mono); font-size: 0.9rem;">--</div>
+    </div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">Model</div>
+        <div class="status-value" id="model">--</div>
+    </div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">Firmware</div>
+        <div class="status-value" id="firmware" style="font-family: var(--font-mono); font-size: 0.85rem;">--</div>
+    </div>
+
+    <!-- ESP 硬件信息：Chip, CPU Freq, Flash, Free Heap 分成两列 -->
+    <div class="status-item" style="grid-column: span 2; padding: 16px; margin-bottom:6px;">
+        <div class="status-grid" style="grid-template-columns: 1fr 1fr; gap: 6px;">
+            <div class="status-item" style="padding: 12px; text-align: center;">
+                <div class="status-label">Chip</div>
+                <div class="status-value" id="esp-chip" style="font-size: 0.85rem;">--</div>
+            </div>
+            <div class="status-item" style="padding: 12px; text-align: center;">
+                <div class="status-label">CPU Freq</div>
+                <div class="status-value" id="esp-freq" style="font-size: 0.85rem;">--</div>
+            </div>
+            <div class="status-item" style="padding: 12px; text-align: center;">
+                <div class="status-label">Flash</div>
+                <div class="status-value" id="esp-flash" style="font-size: 0.85rem;">--</div>
+            </div>
+            <div class="status-item" style="padding: 12px; text-align: center;">
+                <div class="status-label">Free Heap</div>
+                <div class="status-value" id="esp-heap" style="font-size: 0.85rem;">--</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 其他信息各占一整行（左右布局） -->
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">SDK Version</div>
+        <div class="status-value" id="esp-sdk" style="font-size: 0.75rem; font-family: monospace;">--</div>
+    </div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">MAC Address</div>
+        <div class="status-value" id="esp-mac" style="font-size: 0.8rem; font-family: monospace;">--</div>
+    </div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">IP Address</div>
+        <div class="status-value" id="esp-ip" style="font-size: 0.85rem;">--</div>
+    </div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+        <div class="status-label" style="margin-bottom: 0;">🌡️ Temperature</div>
+        <div class="status-value" id="esp-temperature" style="font-size: 0.9rem;">--</div>
+    </div>
+<div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+    <div class="status-label" style="margin-bottom: 0;">📶 WiFi SSID</div>
+    <div class="status-value" id="current-wifi-ssid" style="font-size: 0.85rem;">--</div>
+</div>
+<div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left; margin-bottom:6px;">
+    <div class="status-label" style="margin-bottom: 0;">📶 WiFi Signal</div>
+    <div class="status-value" id="current-wifi-signal" style="font-size: 0.85rem;">--</div>
+</div>
+    <div class="status-item" style="grid-column: span 2; display: flex; justify-content: space-between; align-items: center; padding: 16px; text-align: left;">
+        <div class="status-label" style="margin-bottom: 0;">⏱️ Uptime</div>
+        <div class="status-value" id="esp-uptime" style="font-size: 0.85rem; font-family: monospace;">--</div>
+    </div>
+<!-- Device Info 卡片结束 -->
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px;">
+        <button onclick="refreshStatus()" class="secondary">
+            <span style="margin-right: 5px;">↻</span> Refresh
+        </button>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px;">
+            <button onclick="powerOnModem()" style="background: linear-gradient(135deg, #f59e0b, #d97706); padding: 8px; font-size: 0.85rem;">
+                <span style="margin-right: 2px;">⚡</span> On
+            </button>
+            <button onclick="powerOffModem()" class="danger" style="padding: 8px; font-size: 0.85rem;">
+                <span style="margin-right: 2px;">⭕</span> Off
+            </button>
+            <button onclick="rebootEsp()" class="secondary" style="padding: 8px; font-size: 0.85rem;">
+                <span style="margin-right: 2px;">🔄</span> ESP
+            </button>
+        </div>
+    </div>
+</div>
 
                 <div class="card">
                     <div class="card-header">
@@ -504,7 +656,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <button onclick="refreshCallStatus(true)" class="secondary" style="width: auto; padding: 6px 12px; font-size: 0.8rem;">Refresh</button>
                 </div>
                 <input type="tel" id="phone-number" placeholder="+1234567890" style="font-size: 1.4rem; text-align: center; letter-spacing: 1px; font-family: var(--font-mono);">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 15px;">
                     <button onclick="dialNumber()" style="background: var(--success-color); box-shadow: 0 4px 12px rgba(74, 222, 128, 0.2);">Call</button>
                     <button onclick="hangupCall()" class="danger">End Call</button>
                 </div>
@@ -531,7 +683,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <div id="call-log" class="terminal-output" style="height: 140px; color: var(--text-secondary);">No active calls</div>
                 </div>
                 <div class="status-label" style="margin-top: 15px;">Speaker Volume</div>
-                <div style="display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 8px;">
+                <div style="display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 8px;">
                     <button onclick="adjustCallVolume(-5)" class="secondary" style="width: auto; padding: 8px 14px;">Vol -</button>
                     <div id="call-volume-display" style="min-width: 60px; text-align: center; font-weight: 600;">--</div>
                     <button onclick="adjustCallVolume(5)" class="secondary" style="width: auto; padding: 8px 14px;">Vol +</button>
@@ -664,7 +816,7 @@ const char index_html[] PROGMEM = R"rawliteral(
                         </div>
                     </div>
 
-                    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 15px;">
+                    <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px; margin-bottom: 15px;">
                         <input type="text" id="mqtt-host" placeholder="Broker Host (e.g. test.mosquitto.org)">
                         <input type="number" id="mqtt-port-input" placeholder="Port" value="1883">
                         <input type="number" id="mqtt-context" placeholder="Context ID" value="1">
@@ -724,7 +876,8 @@ const char index_html[] PROGMEM = R"rawliteral(
                     <button onclick="forgetWifi()" class="danger">Forget WiFi</button>
                 </div>
                 <div style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
-                    <button onclick="rebootEsp()" class="secondary" style="width: 100%;">Reboot ESP32</button>
+                    <button onclick="rebootEsp()" class="danger" style="width: 100%; margin-bottom: 10px;">Reboot ESP32</button>
+                    <button onclick="doLogout()" style="width: 100%;">Logout</button>
                 </div>
             </div>
         </div>
@@ -871,6 +1024,85 @@ const char index_html[] PROGMEM = R"rawliteral(
             }
         }
 
+async function refreshEspInfo() {
+    const data = await apiCall('/api/esp/info');
+    if (data) {
+        document.getElementById('esp-chip').innerText = data.chip_model || '--';
+        document.getElementById('esp-freq').innerText = data.cpu_freq_mhz ? `${data.cpu_freq_mhz} MHz` : '--';
+        let flash = data.flash_size_mb ? `${data.flash_size_mb} MB` : '--';
+        document.getElementById('esp-flash').innerText = flash;
+        document.getElementById('esp-heap').innerText = data.free_heap_kb ? `${data.free_heap_kb} KB` : '--';
+        document.getElementById('esp-sdk').innerText = data.sdk_version || '--';
+        document.getElementById('esp-mac').innerText = data.mac || '--';
+        document.getElementById('esp-ip').innerText = data.ip || '--';
+        // 温度显示
+        const tempC = data.temperature_celsius;
+        if (tempC !== undefined && tempC !== "N/A") {
+            const tempF = data.temperature_fahrenheit;
+            document.getElementById('esp-temperature').innerHTML = `${tempC.toFixed(1)}°C / ${tempF.toFixed(1)}°F`;
+        } else {
+            document.getElementById('esp-temperature').innerHTML = 'N/A';
+        }
+        // 运行时间显示
+        const uptime = data.uptime_formatted || '--';
+        document.getElementById('esp-uptime').innerHTML = uptime;
+// 新增：WiFi 信息
+const wifiSsidElem = document.getElementById('current-wifi-ssid');
+const wifiSignalElem = document.getElementById('current-wifi-signal');
+if (wifiSsidElem && wifiSignalElem) {
+    // 使用后端正确的字段名：current_wifi_ssid / current_wifi_rssi
+    if (data.current_wifi_ssid) {
+        wifiSsidElem.innerText = data.current_wifi_ssid;
+
+        // STA 模式（有 WiFi 信号）
+        if (data.current_wifi_rssi !== undefined) {
+            let rssi = data.current_wifi_rssi;
+            let percent = Math.min(100, Math.max(0, Math.floor((rssi + 100) * 2)));
+            wifiSignalElem.innerText = `${rssi} dBm (${percent}%)`;
+        } 
+        // AP 模式（热点模式）
+        else {
+            wifiSignalElem.innerText = 'Hotspot Mode';
+        }
+    } 
+    // 无 WiFi
+    else {
+        wifiSsidElem.innerText = 'None';
+        wifiSignalElem.innerText = '--';
+    }
+}
+    }
+}
+
+// ========== 新增：硬件在线状态同步 ==========
+        async function refreshModemPowerStatus() {
+            const data = await apiCall('/api/modem/status');
+            const statusContainer = document.getElementById('connection-status');
+            const statusText = document.getElementById('status-text');
+            
+            if (!data || !statusContainer) return;
+
+            if (data.online) {
+                // 高电平 -> 绿色 Online
+                statusContainer.className = "status-online";
+                statusText.innerText = "Online";
+            } else {
+                // 低电平 -> 红色 Offline
+                statusContainer.className = "status-offline";
+                statusText.innerText = "Offline";
+            }
+        }
+
+async function refreshSystemTime() {
+    const data = await apiCall('/api/system/time');
+    const timeElement = document.getElementById('sys-time');
+    if (data && data.success) {
+        timeElement.innerText = data.time;
+    } else {
+        timeElement.innerText = "Syncing...";
+    }
+}
+
         async function apiCall(endpoint, data = null) {
             try {
                 const options = {
@@ -880,13 +1112,64 @@ const char index_html[] PROGMEM = R"rawliteral(
                 if (data) options.body = JSON.stringify(data);
                 
                 const res = await fetch(endpoint, options);
-                const json = await res.json();
-                return json;
+                
+                // 如果返回 401 未授权，立刻显示登录框并隐藏主界面
+                if (res.status === 401) {
+                    document.getElementById('login-overlay').style.display = 'flex';
+                    document.querySelector('.container').style.display = 'none';
+                    return null; 
+                }
+                
+                if (!res.ok) return null;
+                return await res.json();
             } catch (e) {
                 console.error(e);
-                showToast("Connection Error");
                 return null;
             }
+        }
+
+        async function doLogin() {
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            const msg = document.getElementById('login-msg');
+            msg.innerText = "Authenticating...";
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user: u, pass: p})
+                });
+                
+                if (res.ok) {
+                    document.getElementById('login-overlay').style.display = 'none';
+                    document.querySelector('.container').style.display = 'block';
+                    msg.innerText = "";
+                    document.getElementById('login-pass').value = "";
+                    showToast("Login Successful");
+                    // 登录成功后重新获取数据
+                    refreshStatus();
+                    refreshCallStatus();
+                    refreshDeviceSensors();
+                    refreshModemInfo(true);
+                    refreshPdpStatus();
+                    refreshMqttStatus();
+                } else {
+                    msg.innerText = "Invalid Username or Password";
+                }
+            } catch(e) {
+                msg.innerText = "Connection Failed";
+            }
+        }
+
+        async function doLogout() {
+            await fetch('/api/logout', { method: 'POST' });
+            // 登出后显示登录框，隐藏主界面
+            document.getElementById('login-overlay').style.display = 'flex';
+            document.querySelector('.container').style.display = 'none';
+            // 清除缓存数据
+            modemInfoCache = null;
+            lastStatusSnapshot = null;
         }
 
         async function refreshStatus() {
@@ -1085,7 +1368,6 @@ const char index_html[] PROGMEM = R"rawliteral(
             
             const res = await apiCall('/api/at', { cmd: cmd });
             if (res && res.response) {
-                // Format response to preserve newlines
                 const formatted = res.response.replace(/\n/g, '<br>');
                 logToTerminal(formatted, 'rx');
             }
@@ -1473,16 +1755,54 @@ const char index_html[] PROGMEM = R"rawliteral(
             refreshMqttStatus();
         }
 
-        // Initial load
+        // 认证检查函数：页面加载时决定显示登录框还是主界面
+        async function checkAuthAndInit() {
+            const loading = document.getElementById('loading-overlay');
+            const loginOverlay = document.getElementById('login-overlay');
+            const container = document.querySelector('.container');
+            
+            try {
+                const res = await fetch('/api/status', { method: 'GET' });
+                if (res.status === 200) {
+                    // 已登录：隐藏加载层，显示主界面
+                    loading.style.display = 'none';
+                    container.style.display = 'block';
+                    loginOverlay.style.display = 'none';
+                    // 加载所有数据
+                    refreshStatus();
+                    refreshCallStatus();
+                    refreshDeviceSensors();
+                    refreshModemInfo();
+                    refreshPdpStatus();
+                    refreshMqttStatus();
+                    refreshEspInfo();
+                    refreshModemPowerStatus(); // <-- 新增这一行：立刻拉取硬件电平
+                    refreshSystemTime(); 
+                } else {
+                    // 未登录：隐藏加载层，显示登录框
+                    loading.style.display = 'none';
+                    loginOverlay.style.display = 'flex';
+                    container.style.display = 'none';
+                }
+            } catch (e) {
+                // 网络错误：显示登录框
+                loading.style.display = 'none';
+                loginOverlay.style.display = 'flex';
+                container.style.display = 'none';
+                console.error('Auth check failed', e);
+            }
+        }
+
+        // 定时器：这些API调用如果遇到401，会在apiCall中自动切换到登录界面
         setInterval(refreshStatus, 5000);
         setInterval(refreshCallStatus, 4000);
         setInterval(() => refreshDeviceSensors(), 15000);
-        refreshStatus();
-        refreshCallStatus();
-        refreshDeviceSensors();
-        refreshModemInfo();
-        refreshPdpStatus();
-        refreshMqttStatus();
+        setInterval(refreshEspInfo, 10000);
+        setInterval(refreshModemPowerStatus, 3000); // <-- 新增这一行：每 3 秒检查一次电平
+        setInterval(refreshSystemTime, 5000);
+
+        // 页面启动时检查认证
+        checkAuthAndInit();
     </script>
 </body>
 </html>
