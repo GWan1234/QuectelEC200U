@@ -27,6 +27,9 @@ QuectelEC200U::QuectelEC200U(HardwareSerial &serial, uint32_t baud,
   _mqttCb = nullptr;
   _callCb = nullptr;
   _urcPos = 0;
+  _cmtPending = false;
+  _cmtSender[0] = '\0';
+  _cmtTimestamp[0] = '\0';
   _baud = baud;
   _rxPin = rxPin;
   _txPin = txPin;
@@ -52,6 +55,9 @@ QuectelEC200U::QuectelEC200U(Stream &stream) {
   _mqttCb = nullptr;
   _callCb = nullptr;
   _urcPos = 0;
+  _cmtPending = false;
+  _cmtSender[0] = '\0';
+  _cmtTimestamp[0] = '\0';
   _baud = 0;
   _rxPin = -1;
   _txPin = -1;
@@ -251,7 +257,8 @@ bool QuectelEC200U::sendAT(const char *cmd, const char *expect,
                            uint32_t timeout) {
   Stream *d = _debugStream ? _debugStream : _debugSerial;
   uint8_t attempts = (_maxRetries > 0) ? _maxRetries : 1;
-  uint32_t actualTimeout = (timeout == 1000 && _cmdTimeoutMs != 1000) ? _cmdTimeoutMs : timeout;
+  uint32_t actualTimeout = (timeout == 0) ? _cmdTimeoutMs : timeout;
+  ErrorCode detectedErr = ErrorCode::UNKNOWN;
 
   for (uint8_t attempt = 0; attempt < attempts; attempt++) {
     if (d) {
@@ -275,13 +282,16 @@ bool QuectelEC200U::sendAT(const char *cmd, const char *expect,
     }
 
     if (strstr(buffer, "+CME ERROR:") != NULL) {
-      _lastError = (ErrorCode)extractInteger(buffer, F("+CME ERROR:"));
+      detectedErr = (ErrorCode)extractInteger(buffer, F("+CME ERROR:"));
+      _lastError = detectedErr;
       if (attempt == attempts - 1) return false;
     } else if (strstr(buffer, "+CMS ERROR:") != NULL) {
-      _lastError = (ErrorCode)extractInteger(buffer, F("+CMS ERROR:"));
+      detectedErr = (ErrorCode)extractInteger(buffer, F("+CMS ERROR:"));
+      _lastError = detectedErr;
       if (attempt == attempts - 1) return false;
     } else if (strstr(buffer, "ERROR") != NULL) {
-      _lastError = ErrorCode::UNKNOWN;
+      detectedErr = ErrorCode::UNKNOWN;
+      _lastError = detectedErr;
       if (attempt == attempts - 1) return false;
     }
 
@@ -290,11 +300,15 @@ bool QuectelEC200U::sendAT(const char *cmd, const char *expect,
     }
   }
 
-  _lastError = ErrorCode::UNKNOWN;
+  if (detectedErr != ErrorCode::UNKNOWN) {
+    _lastError = detectedErr;
+  } else {
+    _lastError = ErrorCode::UNKNOWN;
+  }
   return false;
 }
 
-bool QuectelEC200U::sendAT(const char *cmd) { return sendAT(cmd, "OK", _cmdTimeoutMs); }
+bool QuectelEC200U::sendAT(const char *cmd) { return sendAT(cmd, "OK", 0); }
 
 bool QuectelEC200U::sendCommand(const char *cmd, const char *expected,
                                 uint32_t timeout) {
@@ -316,6 +330,7 @@ int QuectelEC200U::readResponse(char *buffer, size_t length, uint32_t timeout) {
     while (_serial->available() && bytesRead < length - 1) {
       char c = (char)_serial->read();
       buffer[bytesRead++] = c;
+      _feedURCChar(c);
       Stream *d = _debugStream ? _debugStream : _debugSerial;
       if (d) {
         d->print(c);
@@ -340,31 +355,43 @@ int QuectelEC200U::readResponse(char *buffer, size_t length, uint32_t timeout) {
   return bytesRead;
 }
 
+void QuectelEC200U::_feedURCChar(char c) {
+  if (c == '\r' || c == '\n') {
+    if (_urcPos > 0) {
+      _urcBuf[_urcPos] = '\0';
+      _processURCLine(_urcBuf);
+      _urcPos = 0;
+    }
+  } else {
+    if (_urcPos < sizeof(_urcBuf) - 1) {
+      _urcBuf[_urcPos++] = c;
+    } else {
+      _urcBuf[_urcPos] = '\0';
+      _processURCLine(_urcBuf);
+      _urcBuf[0] = c;
+      _urcPos = 1;
+    }
+  }
+}
+
 void QuectelEC200U::tick() {
   if (!_serial) return;
 
   while (_serial->available()) {
     char c = (char)_serial->read();
-
-    if (c == '\r' || c == '\n') {
-      if (_urcPos > 0) {
-        _urcBuf[_urcPos] = '\0';
-        _processURCLine(_urcBuf);
-        _urcPos = 0;
-      }
-    } else {
-      if (_urcPos < sizeof(_urcBuf) - 1) {
-        _urcBuf[_urcPos++] = c;
-      } else {
-        _urcBuf[_urcPos] = '\0';
-        _processURCLine(_urcBuf);
-        _urcPos = 0;
-      }
-    }
+    _feedURCChar(c);
   }
 }
 
 void QuectelEC200U::_processURCLine(const char *line) {
+  if (_cmtPending) {
+    _cmtPending = false;
+    if (_smsCb) {
+      _smsCb(_cmtSender, _cmtTimestamp, line ? line : "");
+    }
+    return;
+  }
+
   if (!line || strlen(line) == 0) return;
 
   // 1. Network registration URCs
@@ -373,7 +400,22 @@ void QuectelEC200U::_processURCLine(const char *line) {
     if (p) {
       p++;
       while (*p == ' ') p++;
-      updateNetworkStatus();
+      int stat = -1;
+      const char *comma = strchr(p, ',');
+      if (comma) {
+        stat = atoi(comma + 1);
+      } else {
+        stat = atoi(p);
+      }
+      if (stat == 1 || stat == 5) {
+        _networkRegistered = true;
+        _state = MODEM_NETWORK_CONNECTED;
+      } else if (stat >= 0) {
+        _networkRegistered = false;
+        if (_state == MODEM_NETWORK_CONNECTED) {
+          _state = MODEM_READY;
+        }
+      }
       if (_netCb) {
         _netCb(p);
       }
@@ -383,42 +425,38 @@ void QuectelEC200U::_processURCLine(const char *line) {
   else if (strncmp(line, "+CMTI:", 6) == 0) {
     const char *comma = strrchr(line, ',');
     if (comma) {
-      int index = atoi(comma + 1);
-      if (index > 0) {
-        String message = readSMS(index);
-        if (_smsCb) {
-          _smsCb("", "", message.c_str());
-        }
+      const char *idxStr = comma + 1;
+      while (*idxStr == ' ') idxStr++;
+      if (_smsCb) {
+        _smsCb("", "", idxStr);
       }
     }
   } else if (strncmp(line, "+CMT:", 5) == 0) {
-    char sender[64] = {0};
-    char timestamp[64] = {0};
+    _cmtSender[0] = '\0';
+    _cmtTimestamp[0] = '\0';
     const char *q1 = strchr(line, '"');
     if (q1) {
       const char *q2 = strchr(q1 + 1, '"');
       if (q2) {
         size_t len = q2 - (q1 + 1);
-        if (len < sizeof(sender)) {
-          strncpy(sender, q1 + 1, len);
-          sender[len] = '\0';
+        if (len < sizeof(_cmtSender)) {
+          strncpy(_cmtSender, q1 + 1, len);
+          _cmtSender[len] = '\0';
         }
         const char *q3 = strchr(q2 + 1, '"');
         if (q3) {
           const char *q4 = strchr(q3 + 1, '"');
           if (q4) {
             size_t tlen = q4 - (q3 + 1);
-            if (tlen < sizeof(timestamp)) {
-              strncpy(timestamp, q3 + 1, tlen);
-              timestamp[tlen] = '\0';
+            if (tlen < sizeof(_cmtTimestamp)) {
+              strncpy(_cmtTimestamp, q3 + 1, tlen);
+              _cmtTimestamp[tlen] = '\0';
             }
           }
         }
       }
     }
-    if (_smsCb) {
-      _smsCb(sender, timestamp, "");
-    }
+    _cmtPending = true;
   }
   // 3. MQTT Data URC
   else if (strncmp(line, "+QMTRECV:", 9) == 0) {

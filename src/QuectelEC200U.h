@@ -100,8 +100,8 @@ class QuectelEC200U {
     bool sendAT(const char* cmd);
     inline bool sendAT(const String &cmd) { return sendAT(cmd.c_str()); }
     
-    bool sendAT(const char* cmd, const char* expect, uint32_t timeout = 1000);
-    inline bool sendAT(const String &cmd, const String &expect, uint32_t timeout = 1000) { return sendAT(cmd.c_str(), expect.c_str(), timeout); }
+    bool sendAT(const char* cmd, const char* expect, uint32_t timeout = 0);
+    inline bool sendAT(const String &cmd, const String &expect, uint32_t timeout = 0) { return sendAT(cmd.c_str(), expect.c_str(), timeout); }
     
     void sendATRaw(const char* cmd);
     inline void sendATRaw(const String &cmd) { sendATRaw(cmd.c_str()); }
@@ -109,8 +109,8 @@ class QuectelEC200U {
     String readResponse(uint32_t timeout = 1000);
     int readResponse(char* buffer, size_t length, uint32_t timeout);
     
-    bool sendCommand(const char* cmd, const char* expected, uint32_t timeout = 1000);
-    inline bool sendCommand(const String &cmd, const String &expected, uint32_t timeout = 1000) { return sendCommand(cmd.c_str(), expected.c_str(), timeout); }
+    bool sendCommand(const char* cmd, const char* expected, uint32_t timeout = 0);
+    inline bool sendCommand(const String &cmd, const String &expected, uint32_t timeout = 0) { return sendCommand(cmd.c_str(), expected.c_str(), timeout); }
     void enableDebug(Stream &debugSerial);
 
     // Advanced Features
@@ -467,9 +467,12 @@ class QuectelEC200U {
     MQTTDataCallback _mqttCb;
     CallStatusCallback _callCb;
 
-    // URC line buffer
+    // URC line buffer & state
     char _urcBuf[256];
     size_t _urcPos;
+    bool _cmtPending;
+    char _cmtSender[64];
+    char _cmtTimestamp[64];
     
     // Command history
     String _cmdHistory[MAX_HISTORY];
@@ -482,6 +485,7 @@ class QuectelEC200U {
     bool _simChecked;
     bool _networkRegistered;
     
+    void _feedURCChar(char c);
     void _processURCLine(const char* line);
     void flushInput();
     bool expectURC(const char* tag, uint32_t timeout);
