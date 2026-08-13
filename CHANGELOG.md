@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.0.1] - 2026-08-13
+- **Example Compilation Verification**: Achieved 100% clean compilation pass across all 31 library example sketches.
+- **Audio Loopback Support**: Added `setAudioLoopback(bool)` and `audioLoopback(bool)` methods to `QuectelEC200U` for testing audio circuits via `AT+QAUDLOOP`.
+- **Example Fixes**:
+  - `Bluetooth_and_WiFi_Demo.ino`: Added missing `#include <WiFi.h>` for ESP32 builds.
+  - `Indian_APN_Demo.ino`: Added missing Indian carrier APN constants (`JIO_APN`, `AIRTEL_APN`, `VI_APN`, `BSNL_APN`).
+  - `Consentium_IoT_Demo.ino`: Fixed missing forward function declarations.
+  - `PPPOS_Demo.ino`: Updated to use `QuectelHAL` macros and standard AT PPP dial sequence.
+- **Documentation**: Updated `README.md` to accurately document `QuectelHAL.h` macros and helpers.
+
 ## [4.0.0] - 2026-08-13
 - **Unified Hardware Abstraction Layer (HAL)**: Introduced `QuectelHAL.h` providing cross-architecture abstraction for ESP32, RP2040/RP2350 (Raspberry Pi Pico), STM32, Teensy, AVR, SAMD, and Zephyr RTOS.
 - **Non-Blocking Core Async Engine**: Added non-blocking `tick()` method to continuously poll UART, parse Unsolicited Result Codes (URCs), and manage background event dispatching without blocking execution loops.
