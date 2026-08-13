@@ -316,12 +316,14 @@ For a detailed example, see `examples/PPPOS_Demo/PPPOS_Demo.ino`.
 - `enableDebug(Stream &debugStream)`: Enables debug logging output.
 
 ### Hardware Abstraction Layer (`QuectelHAL.h`)
-- `quectel_millis()`: Cross-platform millisecond timestamp.
-- `quectel_delay(ms)`: Cross-platform delay function.
-- `quectel_yield()`: Yields execution to background system/watchdog.
-- `quectel_restart()`: Safe reboot execution for target architecture.
-- `quectel_free_heap()`: Returns free memory space in bytes.
-- `quectel_chip_id()`: Returns chip ID or MAC address string.
+- `QUECTEL_HAL_SERIAL_TYPE`: Platform-specific Serial type (`HardwareSerial`, `SerialUART`, or `SoftwareSerial`).
+- `QUECTEL_HAL_SERIAL_INIT(name, rx, tx)`: Instantiates the hardware or software serial object.
+- `QUECTEL_HAL_SERIAL_BEGIN(name, baud, rx, tx)`: Initializes serial port baud rate and pin mapping across architectures.
+- `QUECTEL_DELAY_MS(ms)`: Platform delay abstraction calling `vTaskDelay` or `yield()` on RTOS targets.
+- `QUECTEL_PIN_MODE(pin, mode)`, `QUECTEL_DIGITAL_WRITE(pin, val)`, `QUECTEL_DIGITAL_READ(pin)`: GPIO control macros.
+- `QUECTEL_PROGMEM`: Memory macro for flash storage across AVR, ARM Cortex-M, and Xtensa.
+- `quectelPowerPulse(pin, activeLevel, pulseMs)`: Helper to toggle PWRKEY or RESET pins reliably without blocking CPU.
+
 
 ### Network
 - `waitForNetwork(uint32_t timeoutMs = 60000)`: Waits for the modem to register on the network.
