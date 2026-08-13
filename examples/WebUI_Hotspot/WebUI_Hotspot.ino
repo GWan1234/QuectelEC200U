@@ -22,6 +22,8 @@
 #include <ArduinoJson.h>
 #include <DNSServer.h>
 #include <QuectelEC200U.h>
+#include <QuectelHAL.h>
+
 // --- Configuration ---
 const char *ap_ssid = "Quectel_Manager";
 const char *ap_password = "password";
@@ -39,9 +41,9 @@ const char *ap_password = "password";
 // Web Server on port 80
 WebServer server(80);
 
-// Initialize Modem
-HardwareSerial modemSerial(1);
-QuectelEC200U modem(modemSerial, 115200, RX_PIN, TX_PIN);
+// Initialize Modem with HAL macro
+QUECTEL_HAL_SERIAL_INIT(modemSerial, RX_PIN, TX_PIN);
+QuectelEC200U modem(modemSerial);
 
 #elif defined(ESP8266)
 #include <ESP8266WebServer.h>
@@ -51,8 +53,8 @@ QuectelEC200U modem(modemSerial, 115200, RX_PIN, TX_PIN);
 // Web Server on port 80
 ESP8266WebServer server(80);
 
-// Initialize Modem
-SoftwareSerial modemSerial(RX_PIN, TX_PIN);
+// Initialize Modem with HAL macro
+QUECTEL_HAL_SERIAL_INIT(modemSerial, RX_PIN, TX_PIN);
 QuectelEC200U modem(modemSerial);
 
 class Preferences {
@@ -73,8 +75,8 @@ public:
 // Web Server on port 80
 WebServer server(80);
 
-// Initialize Modem
-SerialUART& modemSerial = Serial1;
+// Initialize Modem with HAL macro
+QUECTEL_HAL_SERIAL_INIT(modemSerial, RX_PIN, TX_PIN);
 QuectelEC200U modem(modemSerial);
 
 class Preferences {
@@ -335,8 +337,8 @@ void handleOptions() {
 
 void handleRoot() {
   Serial.println(F("HTTP GET / (serving UI)"));
-  // Serve large HTML directly from PROGMEM to avoid heap fragmentation
-  server.send_P(200, "text/html", index_html);
+  server.sendHeader("Content-Encoding", "gzip");
+  server.send_P(200, "text/html", (const char *)index_html_gz, index_html_gz_len);
 }
 
 void handleNotFound() {
@@ -637,6 +639,27 @@ void handleStatus() {
   doc["model"] = modem.getModelIdentification();
   doc["network_info"] = networkInfo;
   doc["rat_detail"] = ratDetail;
+
+#if defined(ESP32) || defined(ESP8266) || defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_RP2350)
+  doc["connected_clients"] = WiFi.softAPgetStationNum();
+#else
+  doc["connected_clients"] = 0;
+#endif
+
+  QuectelEC200U::PDPContext ctx = modem.getPDPContext(1);
+  JsonObject pdpJson = doc["pdp"].to<JsonObject>();
+  pdpJson["active"] = (ctx.cid == 1 && ctx.p_addr.length() > 0 && ctx.p_addr != "0.0.0.0");
+  pdpJson["ip"] = ctx.p_addr;
+  pdpJson["apn"] = ctx.apn;
+
+  QuectelEC200U::GNSSData gnss = modem.getGNSSData();
+  JsonObject gnssJson = doc["gnss"].to<JsonObject>();
+  gnssJson["valid"] = gnss.valid;
+  gnssJson["lat"] = gnss.lat;
+  gnssJson["lon"] = gnss.lon;
+  gnssJson["alt"] = gnss.altitude;
+  gnssJson["sats"] = gnss.nsat;
+  gnssJson["time"] = gnss.utc_time;
 
   JsonObject apnJson = doc["apn"].to<JsonObject>();
   apnJson["apn"] = apnSelection.apn;
@@ -1576,13 +1599,7 @@ void handleSetUSBMode() {
 
 void setup() {
   Serial.begin(115200);
-#if defined(ESP8266)
-  modemSerial.begin(115200);
-#elif defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_RP2350)
-  modemSerial.setRX(RX_PIN);
-  modemSerial.setTX(TX_PIN);
-  modemSerial.begin(115200);
-#endif
+  QUECTEL_HAL_SERIAL_BEGIN(modemSerial, 115200, RX_PIN, TX_PIN);
   loadApnPreferences();
 
   // Init Modem - Try to power on but don't block indefinitely
@@ -1739,5 +1756,5 @@ void setup() {
 void loop() {
   dnsServer.processNextRequest();
   server.handleClient();
-  // Add any non-blocking modem maintenance here if needed
+  modem.tick();
 }
