@@ -19,6 +19,14 @@ QuectelEC200U::QuectelEC200U(HardwareSerial &serial, uint32_t baud,
   _serial = &serial;
   _hwSerial = &serial;
   _debugSerial = nullptr;
+  _debugStream = nullptr;
+  _cmdTimeoutMs = 1000;
+  _maxRetries = 1;
+  _netCb = nullptr;
+  _smsCb = nullptr;
+  _mqttCb = nullptr;
+  _callCb = nullptr;
+  _urcPos = 0;
   _baud = baud;
   _rxPin = rxPin;
   _txPin = txPin;
@@ -36,6 +44,14 @@ QuectelEC200U::QuectelEC200U(Stream &stream) {
   _serial = &stream;
   _hwSerial = nullptr;
   _debugSerial = nullptr;
+  _debugStream = nullptr;
+  _cmdTimeoutMs = 1000;
+  _maxRetries = 1;
+  _netCb = nullptr;
+  _smsCb = nullptr;
+  _mqttCb = nullptr;
+  _callCb = nullptr;
+  _urcPos = 0;
   _baud = 0;
   _rxPin = -1;
   _txPin = -1;
@@ -61,20 +77,22 @@ bool QuectelEC200U::parseJson(const String &jsonString, JsonDocument &doc) {
 }
 
 void QuectelEC200U::enableDebug(Stream &debugStream) {
-  _debugSerial = &debugStream;
+  setDebugStream(&debugStream);
 }
 
 void QuectelEC200U::logDebug(const String &msg) {
-  if (_debugSerial) {
-    _debugSerial->print(F("[DEBUG] "));
-    _debugSerial->println(msg);
+  Stream *d = _debugStream ? _debugStream : _debugSerial;
+  if (d) {
+    d->print(F("[DEBUG] "));
+    d->println(msg);
   }
 }
 
 void QuectelEC200U::logError(const String &msg) {
-  if (_debugSerial) {
-    _debugSerial->print(F("[ERROR] "));
-    _debugSerial->println(msg);
+  Stream *d = _debugStream ? _debugStream : _debugSerial;
+  if (d) {
+    d->print(F("[ERROR] "));
+    d->println(msg);
   }
 }
 
@@ -219,58 +237,64 @@ void QuectelEC200U::updateNetworkStatus() {
   }
 }
 
-// Send AT command without waiting for response (for manual handling)
+/// Send AT command without waiting for response (for manual handling)
 void QuectelEC200U::sendATRaw(const char *cmd) {
-  if (_debugSerial) {
-    _debugSerial->print(F("CMD (Raw): "));
-    _debugSerial->println(cmd);
+  Stream *d = _debugStream ? _debugStream : _debugSerial;
+  if (d) {
+    d->print(F("CMD (Raw): "));
+    d->println(cmd);
   }
   _serial->println(cmd);
 }
 
-// Inspired by simple AT command approach - clean and efficient
 bool QuectelEC200U::sendAT(const char *cmd, const char *expect,
                            uint32_t timeout) {
-  if (_debugSerial) {
-    _debugSerial->print(F("CMD: "));
-    _debugSerial->println(cmd);
-  }
+  Stream *d = _debugStream ? _debugStream : _debugSerial;
+  uint8_t attempts = (_maxRetries > 0) ? _maxRetries : 1;
+  uint32_t actualTimeout = (timeout == 1000 && _cmdTimeoutMs != 1000) ? _cmdTimeoutMs : timeout;
 
-  _serial->println(cmd);
+  for (uint8_t attempt = 0; attempt < attempts; attempt++) {
+    if (d) {
+      d->print(F("CMD: "));
+      d->println(cmd);
+    }
 
-  char buffer[256];
-  readResponse(buffer, sizeof(buffer), timeout);
+    _serial->println(cmd);
 
-  if (_debugSerial) {
-    _debugSerial->print(F("RESP: "));
-    _debugSerial->println(buffer);
-  }
+    char buffer[256];
+    readResponse(buffer, sizeof(buffer), actualTimeout);
 
-  if (strstr(buffer, expect) != NULL) {
-    _lastError = ErrorCode::NONE;
-    return true;
-  }
+    if (d) {
+      d->print(F("RESP: "));
+      d->println(buffer);
+    }
 
-  if (strstr(buffer, "+CME ERROR:") != NULL) {
-    _lastError = (ErrorCode)extractInteger(buffer, F("+CME ERROR:"));
-    return false;
-  }
+    if (strstr(buffer, expect) != NULL) {
+      _lastError = ErrorCode::NONE;
+      return true;
+    }
 
-  if (strstr(buffer, "+CMS ERROR:") != NULL) {
-    _lastError = (ErrorCode)extractInteger(buffer, F("+CMS ERROR:"));
-    return false;
-  }
+    if (strstr(buffer, "+CME ERROR:") != NULL) {
+      _lastError = (ErrorCode)extractInteger(buffer, F("+CME ERROR:"));
+      if (attempt == attempts - 1) return false;
+    } else if (strstr(buffer, "+CMS ERROR:") != NULL) {
+      _lastError = (ErrorCode)extractInteger(buffer, F("+CMS ERROR:"));
+      if (attempt == attempts - 1) return false;
+    } else if (strstr(buffer, "ERROR") != NULL) {
+      _lastError = ErrorCode::UNKNOWN;
+      if (attempt == attempts - 1) return false;
+    }
 
-  if (strstr(buffer, "ERROR") != NULL) {
-    _lastError = ErrorCode::UNKNOWN;
-    return false;
+    if (attempt < attempts - 1) {
+      delay(100);
+    }
   }
 
   _lastError = ErrorCode::UNKNOWN;
   return false;
 }
 
-bool QuectelEC200U::sendAT(const char *cmd) { return sendAT(cmd, "OK", 1000); }
+bool QuectelEC200U::sendAT(const char *cmd) { return sendAT(cmd, "OK", _cmdTimeoutMs); }
 
 bool QuectelEC200U::sendCommand(const char *cmd, const char *expected,
                                 uint32_t timeout) {
@@ -292,8 +316,9 @@ int QuectelEC200U::readResponse(char *buffer, size_t length, uint32_t timeout) {
     while (_serial->available() && bytesRead < length - 1) {
       char c = (char)_serial->read();
       buffer[bytesRead++] = c;
-      if (_debugSerial) {
-        _debugSerial->print(c);
+      Stream *d = _debugStream ? _debugStream : _debugSerial;
+      if (d) {
+        d->print(c);
       }
     }
     buffer[bytesRead] = '\0';
@@ -313,6 +338,144 @@ int QuectelEC200U::readResponse(char *buffer, size_t length, uint32_t timeout) {
   }
 
   return bytesRead;
+}
+
+void QuectelEC200U::tick() {
+  if (!_serial) return;
+
+  while (_serial->available()) {
+    char c = (char)_serial->read();
+
+    if (c == '\r' || c == '\n') {
+      if (_urcPos > 0) {
+        _urcBuf[_urcPos] = '\0';
+        _processURCLine(_urcBuf);
+        _urcPos = 0;
+      }
+    } else {
+      if (_urcPos < sizeof(_urcBuf) - 1) {
+        _urcBuf[_urcPos++] = c;
+      } else {
+        _urcBuf[_urcPos] = '\0';
+        _processURCLine(_urcBuf);
+        _urcPos = 0;
+      }
+    }
+  }
+}
+
+void QuectelEC200U::_processURCLine(const char *line) {
+  if (!line || strlen(line) == 0) return;
+
+  // 1. Network registration URCs
+  if (strncmp(line, "+CREG:", 6) == 0 || strncmp(line, "+CGREG:", 7) == 0 || strncmp(line, "+CEREG:", 7) == 0) {
+    const char *p = strchr(line, ':');
+    if (p) {
+      p++;
+      while (*p == ' ') p++;
+      updateNetworkStatus();
+      if (_netCb) {
+        _netCb(p);
+      }
+    }
+  }
+  // 2. SMS Received URCs
+  else if (strncmp(line, "+CMTI:", 6) == 0) {
+    const char *comma = strrchr(line, ',');
+    if (comma) {
+      int index = atoi(comma + 1);
+      if (index > 0) {
+        String message = readSMS(index);
+        if (_smsCb) {
+          _smsCb("", "", message.c_str());
+        }
+      }
+    }
+  } else if (strncmp(line, "+CMT:", 5) == 0) {
+    char sender[64] = {0};
+    char timestamp[64] = {0};
+    const char *q1 = strchr(line, '"');
+    if (q1) {
+      const char *q2 = strchr(q1 + 1, '"');
+      if (q2) {
+        size_t len = q2 - (q1 + 1);
+        if (len < sizeof(sender)) {
+          strncpy(sender, q1 + 1, len);
+          sender[len] = '\0';
+        }
+        const char *q3 = strchr(q2 + 1, '"');
+        if (q3) {
+          const char *q4 = strchr(q3 + 1, '"');
+          if (q4) {
+            size_t tlen = q4 - (q3 + 1);
+            if (tlen < sizeof(timestamp)) {
+              strncpy(timestamp, q3 + 1, tlen);
+              timestamp[tlen] = '\0';
+            }
+          }
+        }
+      }
+    }
+    if (_smsCb) {
+      _smsCb(sender, timestamp, "");
+    }
+  }
+  // 3. MQTT Data URC
+  else if (strncmp(line, "+QMTRECV:", 9) == 0) {
+    char topic[128] = {0};
+    char payload[256] = {0};
+    const char *t1 = strchr(line, '"');
+    if (t1) {
+      const char *t2 = strchr(t1 + 1, '"');
+      if (t2) {
+        size_t topicLen = t2 - (t1 + 1);
+        if (topicLen < sizeof(topic)) {
+          strncpy(topic, t1 + 1, topicLen);
+          topic[topicLen] = '\0';
+        }
+        const char *p1 = strchr(t2 + 1, '"');
+        if (p1) {
+          const char *p2 = strrchr(line, '"');
+          if (p2 && p2 > p1) {
+            size_t payLen = p2 - (p1 + 1);
+            if (payLen < sizeof(payload)) {
+              strncpy(payload, p1 + 1, payLen);
+              payload[payLen] = '\0';
+            }
+          }
+        }
+      }
+    }
+    if (_mqttCb) {
+      _mqttCb(topic, payload);
+    }
+  }
+  // 4. Voice Call status URCs
+  else if (strncmp(line, "+CLIP:", 6) == 0) {
+    char number[64] = {0};
+    const char *q1 = strchr(line, '"');
+    if (q1) {
+      const char *q2 = strchr(q1 + 1, '"');
+      if (q2) {
+        size_t len = q2 - (q1 + 1);
+        if (len < sizeof(number)) {
+          strncpy(number, q1 + 1, len);
+          number[len] = '\0';
+        }
+      }
+    }
+    if (_callCb) {
+      _callCb(number, "RINGING");
+    }
+  } else if (strcmp(line, "RING") == 0) {
+    if (_callCb) {
+      _callCb("", "RINGING");
+    }
+  } else if (strcmp(line, "NO CARRIER") == 0 || strcmp(line, "BUSY") == 0 || strcmp(line, "NO ANSWER") == 0) {
+    if (_callCb) {
+      _callCb("", line);
+    }
+  }
 }
 
 bool QuectelEC200U::waitForResponse(const char *expect, uint32_t timeout) {

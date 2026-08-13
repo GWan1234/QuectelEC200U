@@ -65,6 +65,11 @@ enum class ErrorCode {
   FS_ERROR = -70,
 };
 
+typedef void (*NetworkStatusCallback)(const char* status);
+typedef void (*SMSReceivedCallback)(const char* sender, const char* timestamp, const char* message);
+typedef void (*MQTTDataCallback)(const char* topic, const char* payload);
+typedef void (*CallStatusCallback)(const char* number, const char* state);
+
 class QuectelEC200U {
   public:
     // HardwareSerial constructor (auto-configure on begin). On ESP32, optional RX/TX pins are supported.
@@ -80,7 +85,18 @@ class QuectelEC200U {
     // Power Management
     void powerOn(int pin);
 
-    // Core Communication
+    // Core Communication & Async Engine
+    void tick();
+    void onNetworkStatus(NetworkStatusCallback cb) { _netCb = cb; }
+    void onSMSReceived(SMSReceivedCallback cb) { _smsCb = cb; }
+    void onMQTTData(MQTTDataCallback cb) { _mqttCb = cb; }
+    void onCallStatus(CallStatusCallback cb) { _callCb = cb; }
+    void setDebugStream(Stream* stream) { _debugStream = stream; _debugSerial = stream; }
+    void setCommandTimeout(uint32_t timeoutMs) { _cmdTimeoutMs = timeoutMs; }
+    void setRetryCount(uint8_t retries) { _maxRetries = retries; }
+    uint32_t getCommandTimeout() const { return _cmdTimeoutMs; }
+    uint8_t getRetryCount() const { return _maxRetries; }
+
     bool sendAT(const char* cmd);
     inline bool sendAT(const String &cmd) { return sendAT(cmd.c_str()); }
     
@@ -433,12 +449,27 @@ class QuectelEC200U {
   private:
     Stream *_serial;
     Stream *_debugSerial;
+    Stream *_debugStream;
     HardwareSerial *_hwSerial;
     uint32_t _baud;
     int8_t _rxPin;
     int8_t _txPin;
     ModemState _state;
     ErrorCode _lastError;
+
+    // Timeout and Retry settings
+    uint32_t _cmdTimeoutMs;
+    uint8_t _maxRetries;
+
+    // Callbacks
+    NetworkStatusCallback _netCb;
+    SMSReceivedCallback _smsCb;
+    MQTTDataCallback _mqttCb;
+    CallStatusCallback _callCb;
+
+    // URC line buffer
+    char _urcBuf[256];
+    size_t _urcPos;
     
     // Command history
     String _cmdHistory[MAX_HISTORY];
@@ -451,6 +482,7 @@ class QuectelEC200U {
     bool _simChecked;
     bool _networkRegistered;
     
+    void _processURCLine(const char* line);
     void flushInput();
     bool expectURC(const char* tag, uint32_t timeout);
     inline bool expectURC(const String &tag, uint32_t timeout) { return expectURC(tag.c_str(), timeout); }
