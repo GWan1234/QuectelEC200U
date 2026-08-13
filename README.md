@@ -21,23 +21,27 @@ More information on Custom ESP32-S3 with EC200U: [Sharvi Electronics ESP32-S3 wi
 More information on Capuf Module: [Capuf Module](https://capuf.in/products/ec200u-cn-4g-lte-modem)
 
 ## Features
-- **Core & State Management:** Initialization, AT command interface, state tracking.
-- **Network:** SIM/registration, PDP attach/activation, signal strength, operator info.
-- **TCP/IP:** TCP sockets (QIOPEN/QISEND/QIRD).
-- **SSL/TLS:** Secure sockets (QSSLCFG/QSSLOPEN), CA certificate management.
-- **HTTP/HTTPS:** GET and POST requests.
-- **MQTT:** Connect, publish, subscribe, disconnect (with TLS support).
+- **Unified Hardware Abstraction Layer (HAL):** Multi-MCU support (`QuectelHAL.h`) covering ESP32, RP2040/RP2350 Pico, STM32, Teensy, AVR, SAMD, and Zephyr RTOS.
+- **Non-Blocking Core Async Engine:** Non-blocking `tick()` method to continuously poll UART, parse URCs, and handle state transitions asynchronously.
+- **Asynchronous URC Callbacks:** Event-driven callbacks for incoming SMS (`onSMS`), voice calls (`onCall`), MQTT messages (`onMQTT`), network registration changes (`onNetwork`), and raw TCP socket notifications (`onTCPData`).
+- **Structured Diagnostic Logging:** Configurable log severity (`NONE`, `ERROR`, `WARN`, `INFO`, `DEBUG`) and customizable output stream routing (`setDebugStream`).
+- **Revamped Gzip WebUI Hotspot:** Sleek dark glassmorphism dashboard UI compressed with Gzip (`index_html_gz.h`) served directly from PROGMEM for instant loads.
+- **Core & State Management:** Modem initialization, AT command interface, state tracking.
+- **Network:** SIM/registration, PDP attach/activation, signal strength (CSQ/RSSI), operator info.
+- **TCP/IP & Sockets:** Raw TCP socket management (QIOPEN/QISEND/QIRD).
+- **SSL/TLS:** Secure sockets (QSSLCFG/QSSLOPEN), CA certificate provisioning.
+- **HTTP/HTTPS:** GET and POST requests with TLS support.
+- **MQTT:** Connect, publish, subscribe, disconnect with optional SSL/TLS encryption.
 - **SMS:** Send, read, delete, and count SMS messages.
-- **Voice Calls:** Dial, answer, hang up, list calls, and manage caller ID.
+- **Voice Calls:** Dial, answer, hang up, list calls, and manage speaker/microphone levels.
 - **USSD:** Send and receive USSD messages.
-- **GNSS:** Start/stop, get location (NMEA or parsed), and configure GNSS.
-- **NTP & Time:** Synchronize time with an NTP server, get/set the module's clock.
-- **Filesystem:** List, upload, read, and delete files on the module's filesystem.
+- **GNSS:** Start/stop, get location (NMEA sentence or parsed `GNSSData`), and configure GNSS.
+- **NTP & Time:** Synchronize time with NTP servers, get/set module RTC clock.
+- **Filesystem:** List, upload, read, and delete files on module storage.
 - **TTS (Text-to-Speech):** Play text as speech.
 - **FTP:** Login, download files, and logout.
-- **Audio:** Control speaker volume, microphone gain, sidetone, and audio routing.
-- **Power Management:** Power save mode (PSM), power off, and reboot.
-- **Debugging:** Debug output stream for easier troubleshooting.
+- **Audio:** Speaker volume, mic gain, sidetone, and audio routing.
+- **Power Management:** Power save mode (PSM), power off, and hardware reboot.
 
 ## Installation
 1.  Download the latest release from the [GitHub repository](https://github.com/MISTERNEGATIVE21/QuectelEC200U/releases).
@@ -125,6 +129,78 @@ Most ESP32 examples share the same wiring so you can copy/paste between sketches
 | `EC200U_STATUS_PIN` | 2 | Optional status feedback (HIGH when modem is on) |
 
 Update the macros at the top of each sketch if your carrier board routes the modem elsewhere. Non‑ESP32 boards still use the same macro names so the documentation stays consistent.
+
+## MCU Support Matrix (`QuectelHAL.h`)
+
+The library includes a cross-platform Hardware Abstraction Layer (`QuectelHAL.h`) that automatically adapts GPIO management, time functions (`millis`/`delay`), memory queries (`freeHeap`), and chip identifiers across various microcontroller architectures:
+
+| Platform / MCU | Architecture Macro | Recommended Serial | Supported Features |
+| --- | --- | --- | --- |
+| **ESP32 / ESP32-S3 / ESP32-C3** | `ARDUINO_ARCH_ESP32` | `HardwareSerial` | Full (AT Commands, Async Engine, URC Callbacks, WebUI Hotspot) |
+| **Raspberry Pi Pico / Pico 2** | `ARDUINO_ARCH_RP2040` / `ARDUINO_ARCH_RP2350` | `SerialUART` / `HardwareSerial` | Full (AT Commands, Async Engine, URC Callbacks, WebUI Hotspot) |
+| **STM32** | `ARDUINO_ARCH_STM32` | `HardwareSerial` | Full (AT Commands, Async Engine, URC Callbacks) |
+| **Teensy 3.x / 4.x** | `TEENSYDUINO` | `HardwareSerial` | Full (AT Commands, Async Engine, URC Callbacks) |
+| **Arduino SAMD (Zero/MKR)** | `ARDUINO_ARCH_SAMD` | `Uart` / `HardwareSerial` | Full (AT Commands, Async Engine, URC Callbacks) |
+| **Arduino AVR (Uno/Mega)** | `ARDUINO_ARCH_AVR` | `SoftwareSerial` / `HardwareSerial` | Core AT Commands, Async Engine, URC Callbacks |
+| **Zephyr RTOS** | `ARDUINO_ARCH_ZEPHYR` | `HardwareSerial` | Core AT Commands, Async Engine, URC Callbacks |
+
+---
+
+## Non-Blocking Async Engine & URC Callbacks
+
+Starting in v4.0.0, `QuectelEC200U` includes an asynchronous event engine driven by `modem.tick()`. Call `modem.tick()` inside your `loop()` to continuously parse incoming serial data and trigger registered URC callbacks without blocking user code.
+
+### URC Callback Setup Example
+
+```cpp
+#include <QuectelEC200U.h>
+
+#if defined(ARDUINO_ARCH_ESP32)
+  HardwareSerial SerialAT(1);
+  QuectelEC200U modem(SerialAT, 115200, 16, 17);
+#else
+  HardwareSerial& SerialAT = Serial1;
+  QuectelEC200U modem(SerialAT);
+#endif
+
+void setup() {
+  Serial.begin(115200);
+  if (!modem.begin()) {
+    Serial.println("Modem init failed!");
+    while(1);
+  }
+
+  // Handle incoming SMS (+CMTI)
+  modem.onSMS([](const String& sender, const String& body) {
+    Serial.printf("SMS Received from %s: %s\n", sender.c_str(), body.c_str());
+  });
+
+  // Handle incoming Voice Calls (RING / +CLIP)
+  modem.onCall([](const String& number, bool ringing) {
+    if (ringing) {
+      Serial.printf("Incoming Call from: %s\n", number.c_str());
+    } else {
+      Serial.println("Call disconnected.");
+    }
+  });
+
+  // Handle incoming MQTT messages (+QMTRECV)
+  modem.onMQTT([](const String& topic, const String& payload) {
+    Serial.printf("MQTT [%s] -> %s\n", topic.c_str(), payload.c_str());
+  });
+
+  // Handle Network Registration updates (+CREG/+CGREG/+CEREG)
+  modem.onNetwork([](bool registered, int stat) {
+    Serial.printf("Network Registration Changed: %s (Status: %d)\n",
+                  registered ? "REGISTERED" : "SEARCHING", stat);
+  });
+}
+
+void loop() {
+  // Non-blocking tick: processes UART buffer and dispatches callbacks
+  modem.tick();
+}
+```
 
 ## Indian APN Settings
 
@@ -217,8 +293,15 @@ For a detailed example, see `examples/PPPOS_Demo/PPPOS_Demo.ino`.
 
 ## API Reference
 
-### Core
+### Core & Async Engine
 - `begin(bool forceReinit = false)`: Initializes the modem.
+- `tick()`: Non-blocking execution loop. Polls UART, parses URC responses, and triggers registered callbacks.
+- `onSMS(SMSCallback cb)`: Register callback for incoming SMS (`void(const String& sender, const String& body)`).
+- `onCall(CallCallback cb)`: Register callback for voice call events (`void(const String& number, bool ringing)`).
+- `onMQTT(MQTTCallback cb)`: Register callback for MQTT messages (`void(const String& topic, const String& payload)`).
+- `onNetwork(NetworkCallback cb)`: Register callback for network registration changes (`void(bool registered, int stat)`).
+- `onTCPData(TCPDataCallback cb)`: Register callback for raw TCP socket data (`void(int connectID, int length)`).
+- `onURC(URCCallback cb)`: Register fallback callback for unhandled URCs (`void(const String& urc)`).
 - `sendAT(const String &cmd, const String &expect = "OK", uint32_t timeout = 3000)`: Sends an AT command.
 - `readResponse(char* buffer, size_t length, uint32_t timeout)`: Reads the response from the modem into the provided buffer.
 - `getIMEI()`: Gets the modem's IMEI.
@@ -227,18 +310,18 @@ For a detailed example, see `examples/PPPOS_Demo/PPPOS_Demo.ino`.
 - `powerOff()`: Powers off the modem.
 - `reboot()`: Reboots the modem.
 
-### Error Handling
-- `getLastError()`: Returns the last error code as an `ErrorCode` enum.
-- `getLastErrorString()`: Returns a string description of the last error.
+### Diagnostic Logging
+- `setLogLevel(QuectelLogLevel level)`: Sets log severity (`QUECTEL_LOG_LEVEL_NONE`, `ERROR`, `WARN`, `INFO`, `DEBUG`).
+- `setDebugStream(Stream &debugStream)`: Configures diagnostic logging output stream.
+- `enableDebug(Stream &debugStream)`: Enables debug logging output.
 
-### State Management
-- `getState()`: Returns the current modem state (`ModemState` enum).
-- `isInitialized()`: Returns `true` if the modem is initialized.
-- `isNetworkReady()`: Returns `true` if the modem is registered on the network.
-- `setState(ModemState state)`: Sets the modem state.
-
-### Debugging
-- `enableDebug(Stream &debugStream)`: Enables debug output to the specified stream.
+### Hardware Abstraction Layer (`QuectelHAL.h`)
+- `quectel_millis()`: Cross-platform millisecond timestamp.
+- `quectel_delay(ms)`: Cross-platform delay function.
+- `quectel_yield()`: Yields execution to background system/watchdog.
+- `quectel_restart()`: Safe reboot execution for target architecture.
+- `quectel_free_heap()`: Returns free memory space in bytes.
+- `quectel_chip_id()`: Returns chip ID or MAC address string.
 
 ### Network
 - `waitForNetwork(uint32_t timeoutMs = 60000)`: Waits for the modem to register on the network.

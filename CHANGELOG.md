@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.0.0] - 2026-08-13
+- **Unified Hardware Abstraction Layer (HAL)**: Introduced `QuectelHAL.h` providing cross-architecture abstraction for ESP32, RP2040/RP2350 (Raspberry Pi Pico), STM32, Teensy, AVR, SAMD, and Zephyr RTOS.
+- **Non-Blocking Core Async Engine**: Added non-blocking `tick()` method to continuously poll UART, parse Unsolicited Result Codes (URCs), and manage background event dispatching without blocking execution loops.
+- **Asynchronous URC Callbacks**: Introduced event callbacks for incoming SMS (`onSMS`), voice calls (`onCall`), MQTT message reception (`onMQTT`), network registration state changes (`onNetwork`), and raw TCP socket notifications (`onTCPData`).
+- **Configurable Diagnostic Logging**: Integrated structured logging with customizable severity levels (`QUECTEL_LOG_LEVEL_NONE`, `ERROR`, `WARN`, `INFO`, `DEBUG`) and stream redirection (`setDebugStream()`).
+- **Revamped Gzip WebUI Hotspot**: Modernized `WebUI_Hotspot` example with a sleek dark glassmorphism dashboard, Gzip-compressed PROGMEM web assets (`index_html_gz.h`), live PDP context management, interactive SMS/Call dialer, and MQTT broker control panel.
+- **Stability & Parsing Improvements**: Enhanced AT command response timeout handling, robust URC string extraction, and synchronized PDP context status tracking.
+
 ## 3.5.0 - 2026-04-17
 - Hardware Support: Added Raspberry Pi Pico W, Pico W2, and Pico 2W support (`ARDUINO_ARCH_RP2040` and `ARDUINO_ARCH_RP2350`) compatible with Earle Philhower's core.
 - WebUI Hotspot: Updated the example to natively support Pico architectures featuring seamless `SerialUART` mapping and WebServer imports.
