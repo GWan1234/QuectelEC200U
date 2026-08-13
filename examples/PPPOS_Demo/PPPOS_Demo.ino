@@ -1,53 +1,47 @@
 /*
   PPPoS Demo for Quectel EC200U
 
-  This example demonstrates how to use the PPPOSClient library to connect to the internet
-  using the Quectel EC200U modem.
-
-  This example requires the PPPOSClient library. You can install it from the Arduino IDE Library Manager.
+  This example demonstrates how to set up PPP (Point-to-Point Protocol over Serial)
+  using the Quectel EC200U modem with unified MCU Hardware Abstraction Layer.
 */
 
-#include <ppposclient.h>
+#include <QuectelEC200U.h>
+#include <QuectelHAL.h>
 
-#define EC200U_RX   18  // ESP32 pin connected to EC200U TX
-#define EC200U_TX   17  // ESP32 pin connected to EC200U RX
-#define PW_KEY    10  
+#define EC200U_RX 18
+#define EC200U_TX 17
+#define PW_KEY    10
 
+QUECTEL_HAL_SERIAL_INIT(modemSerial, EC200U_RX, EC200U_TX);
+QuectelEC200U modem(modemSerial);
 
-const char* APN = "internet";         // Replace with your SIM card APN
-const char* USER = "";                // Username (if required)
-const char* PASS = "";                // Password (if required)
-
-PPPOSClient pppClient;
+const char* APN = "internet";
 
 void setup() {
-  pinMode(PW_KEY, OUTPUT);
   Serial.begin(115200);
-  digitalWrite(PW_KEY, LOW);
-  delay(2000);
-  Serial.println("Starting PPPoS with EC200U...");
+  quectelPowerPulse(PW_KEY);
+  QUECTEL_HAL_SERIAL_BEGIN(modemSerial, 115200, EC200U_RX, EC200U_TX);
 
-  // Begin PPP client on UART1
-  pppClient.setSerial(1, EC200U_RX, EC200U_TX);  
-  pppClient.setAPN(APN, USER, PASS);
-  pppClient.setDebugStream(&Serial);
-
-  // Optional: Set modem init sequence
-  pppClient.setModemResetCommandSequence("ATE0\r\nAT+CMEE=2\r\nAT+CFUN=1\r\nAT+CPIN?\r\n");
-
-  if (pppClient.connect()) {
-    Serial.println("Connected to cellular network!");
+  Serial.println("Initializing Quectel EC200U for PPPoS...");
+  if (modem.begin()) {
+    Serial.println("Modem ready.");
   } else {
-    Serial.println("Failed to connect.");
+    Serial.println("Modem initialization failed!");
+    return;
+  }
+
+  Serial.println("Setting APN...");
+  modem.setAPN(APN);
+
+  Serial.println("Entering PPP mode (ATD*99#)...");
+  if (modem.sendAT("ATD*99#", "CONNECT", 10000)) {
+    Serial.println("PPP Connection Established! Serial stream switched to PPP data mode.");
+  } else {
+    Serial.println("PPP dial failed.");
   }
 }
 
 void loop() {
-  if (pppClient.isConnected()) {
-    Serial.println("IP Address: " + pppClient.getIPAddress());
-  } else {
-    Serial.println("Disconnected...");
-  }
-
-  delay(10000);
+  modem.tick();
+  delay(1000);
 }

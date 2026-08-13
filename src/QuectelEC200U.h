@@ -141,6 +141,9 @@ class QuectelEC200U {
     bool setAudioChannel(int channel);
     bool setAudioInterface(const char* params);
     inline bool setAudioInterface(const String &params) { return setAudioInterface(params.c_str()); }
+    bool setAudioLoopback(bool enable);
+    inline bool audioLoopback(bool enable) { return setAudioLoopback(enable); }
+
 
 
     // Advanced Data

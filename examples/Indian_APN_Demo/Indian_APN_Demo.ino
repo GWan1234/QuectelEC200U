@@ -12,6 +12,13 @@
 #define EC200U_TX_PIN 17
 #define EC200U_PW_KEY_PIN 10
 
+// Indian Carrier APN Definitions
+#define JIO_APN "jionet"
+#define AIRTEL_APN "airtelgprs.com"
+#define VI_APN "portalnmms"
+#define BSNL_APN "bsnlnet"
+
+
 #if defined(ARDUINO_ARCH_ESP32)
   HardwareSerial SerialAT(1);
   QuectelEC200U modem(SerialAT, 115200, EC200U_RX_PIN, EC200U_TX_PIN);

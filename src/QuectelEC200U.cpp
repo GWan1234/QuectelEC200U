@@ -315,8 +315,8 @@ bool QuectelEC200U::sendCommand(const char *cmd, const char *expected,
   return sendAT(cmd, expected, timeout);
 }
 
-[[deprecated("Use readResponse(char*, size_t, uint32_t) instead")]] String
-QuectelEC200U::readResponse(uint32_t timeout) {
+String QuectelEC200U::readResponse(uint32_t timeout) {
+
   char buffer[256];
   readResponse(buffer, sizeof(buffer), timeout);
   return String(buffer);
@@ -1812,6 +1812,11 @@ bool QuectelEC200U::setAudioChannel(int channel) {
 bool QuectelEC200U::setAudioInterface(const char *params) {
   return sendAT(String("AT+QDAI=") + params);
 }
+
+bool QuectelEC200U::setAudioLoopback(bool enable) {
+  return sendAT(String("AT+QAUDLOOP=") + (enable ? 1 : 0));
+}
+
 
 // ===== Ping =====
 bool QuectelEC200U::ping(const char *host, int contextID, int timeout,

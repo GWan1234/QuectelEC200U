@@ -1,4 +1,8 @@
 #include <QuectelEC200U.h>
+#if defined(ARDUINO_ARCH_ESP32)
+  #include <WiFi.h>
+#endif
+
 
 // Set the EC200U modem RX and TX pins
 #define EC200U_RX_PIN 16

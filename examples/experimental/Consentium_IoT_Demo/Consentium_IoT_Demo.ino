@@ -18,9 +18,14 @@ const char* BOARD_KEY = "YOUR_BOARD_KEY";
 const unsigned long SEND_INTERVAL_MS = 30000; // Send telemetry every 30 seconds
 
 
-// ==============================================================================
-// 2. PAYLOAD BUILDER CLASS
-// ==============================================================================
+// Forward declarations for AT helper functions
+void sendATCommand(String command, String expectedResponse, unsigned long timeout);
+bool waitForResponse(String expected, unsigned long timeout);
+String getDeviceIMEI();
+int getSignalStrength();
+void uploadCertIfNeeded();
+void sendTelemetry();
+
 class ConsentiumPayload {
   private:
     static const int MAX_PAIRS = 15; // Max number of sensors per payload
